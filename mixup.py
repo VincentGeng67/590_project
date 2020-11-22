@@ -19,7 +19,7 @@ from utils import progress_bar
 
 
 
-def mixup_data(x, y, alpha=1.0, use_cuda=True):
+def mixup_data(x, y, device,alpha=1.0, use_cuda=True):
     '''Returns mixed inputs, pairs of targets, and lambda'''
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
@@ -28,7 +28,7 @@ def mixup_data(x, y, alpha=1.0, use_cuda=True):
 
     batch_size = x.size()[0]
     if use_cuda:
-        index = torch.randperm(batch_size).cuda()
+        index = torch.randperm(batch_size).to(device)
     else:
         index = torch.randperm(batch_size)
 

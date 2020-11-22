@@ -1,0 +1,2 @@
+epoch,train loss,reg loss,train acc,test loss,test acc
+0,"tensor(2.3956, device='cuda:0')",0.0,15.8282470703125,"tensor(2.0206, device='cuda:0')",24.3799991607666

@@ -24,9 +24,22 @@ from utils import progress_bar
 from mixup import mixup_data, mixup_criterion
 from resnet import *
 
+def checkpoint(net,acc, epoch,saveName):
+    # Save checkpoint.
+    print('Saving..')
+    state = {
+        'net': net,
+        'acc': acc,
+        'epoch': epoch,
+        'rng_state': torch.get_rng_state()
+    }
+    if not os.path.isdir('checkpoint'):
+        os.mkdir('checkpoint')
+    torch.save(net.state_dict(), saveName)
+
 class myModel(nn.Module):
     
-    def __init__(self,name):
+    def __init__(self,name,saveName,con=False):
         super(myModel, self).__init__()
 #         parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
         parser = argparse.ArgumentParser()
@@ -45,14 +58,15 @@ class myModel(nn.Module):
         parser.add_argument('--decay', default=1e-4, type=float, help='weight decay')
         parser.add_argument('--alpha', default=1., type=float,
                     help='mixup interpolation coefficient (default: 1)')
-#         args = parser.parse_args()
         args, unknown = parser.parse_known_args()
-        self.arg=args
+        self.args=args
+        self.saveName=saveName
         
         self.use_cuda = torch.cuda.is_available()
+        self.device = 'cuda:1'
 
-        best_acc = 0  # best test accuracy
-        start_epoch = 0  # start from epoch 0 or last checkpoint epoch
+        self.best_acc = 0  # best test accuracy
+        self.start_epoch = 0  # start from epoch 0 or last checkpoint epoch
 
         if args.seed != 0:
             torch.manual_seed(args.seed)
@@ -60,30 +74,30 @@ class myModel(nn.Module):
 # Data
 
 # Model
-        if args.resume:
+        if con:
     # Load checkpoint.
             print('==> Resuming from checkpoint..')
-            assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-            checkpoint = torch.load('./checkpoint/ckpt.t7' + args.name + '_'
-                            + str(args.seed))
-            self.net = checkpoint['net']
-            self.best_acc = checkpoint['acc']
-            start_epoch = checkpoint['epoch'] + 1
-            rng_state = checkpoint['rng_state']
-            torch.set_rng_state(rng_state)
+            # assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
+            # checkpoint = torch.load('./checkpoint/ckpt.t7' + args.name + '_'
+            #                 + str(args.seed))
+            # self.net = checkpoint['net']
+            # self.best_acc = checkpoint['acc']
+            # self.start_epoch = checkpoint['epoch'] + 1
+            net.load_state_dict(torch.load(saveName))
+            # rng_state = checkpoint['rng_state']
+            # torch.set_rng_state(rng_state)
         else:
             print('==> Building model..')
             self.net = models.__dict__[name]()
-#             self.net=ResNet18()
 
         if not os.path.isdir('results'):
             os.mkdir('results')
-        self.logname = ('results/log_' + self.net.__class__.__name__ + '_' + args.name + '_'
+        self.logname = ('results/log_' + saveName + '_' + args.name + '_'
            + str(args.seed) + '.csv')
 
         if self.use_cuda:
-            self.net.cuda()
-            self.net = torch.nn.DataParallel(self.net)
+            self.net.to(self.device)
+            # self.net = torch.nn.DataParallel(self.net)
             print(torch.cuda.device_count())
             cudnn.benchmark = True
             print('Using CUDA..')
@@ -103,18 +117,19 @@ class myModel(nn.Module):
         reg_loss = 0
         correct = 0
         total = 0
+        
         for batch_idx, (inputs, targets) in enumerate(trainloader):
             if self.use_cuda:
-                inputs, targets = inputs.cuda(), targets.cuda()
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
             if mixup:
-                inputs, targets_a, targets_b, lam = mixup_data(inputs, targets,
+                inputs, targets_a, targets_b, lam = mixup_data(inputs, targets,self.device,
                                                        alpha, self.use_cuda)
                 inputs, targets_a, targets_b = map(Variable, (inputs,
                                                       targets_a, targets_b))
             outputs = self.net(inputs)
             if mixup:
                 loss = mixup_criterion(self.criterion, outputs, targets_a, targets_b, lam)
-                train_loss += loss.data[0]
+                train_loss += loss.data
             else:
                 loss =self.criterion(outputs,targets)
                 train_loss += loss.data
@@ -130,31 +145,21 @@ class myModel(nn.Module):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            if mixup:
-                progress_bar(batch_idx, len(trainloader),
-                     'Loss: %.3f | Reg: %.5f | Acc: %.3f%% (%d/%d)'
-                     % (train_loss/(batch_idx+1), reg_loss/(batch_idx+1),
-                        100.*correct/total, correct, total))
-            else:
-                progress_bar(batch_idx, len(trainloader),
-                     'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                     % (train_loss/(batch_idx+1), 100.*correct/total,
-                        correct, total))
 
         return (train_loss/batch_idx, reg_loss/batch_idx, 100.*correct/total)
 
 
     def test(self,epoch,testloader):
-        global best_acc
+        
         self.net.eval()
         test_loss = 0
         correct = 0
         total = 0
         for batch_idx, (inputs, targets) in enumerate(testloader):
             if self.use_cuda:
-                inputs, targets = inputs.cuda(), targets.cuda()
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
             inputs, targets = Variable(inputs, volatile=True), Variable(targets)
-            self.outputs = self.net(inputs)
+            outputs = self.net(inputs)
             loss = self.criterion(outputs, targets)
 
             test_loss += loss.data
@@ -162,39 +167,23 @@ class myModel(nn.Module):
             total += targets.size(0)
             correct += predicted.eq(targets.data).cpu().sum()
 
-            progress_bar(batch_idx, len(testloader),
-                     'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                     % (test_loss/(batch_idx+1), 100.*correct/total,
-                        correct, total))
         acc = 100.*correct/total
-        if epoch == start_epoch + self.args.epoch - 1 or acc > best_acc:
-            checkpoint(acc, epoch)
-        if acc > best_acc:
-            best_acc = acc
+        if epoch == self.start_epoch + self.args.epoch - 1 or acc > self.best_acc:
+            checkpoint(self,acc, epoch,self.saveName)
+        if acc > self.best_acc:
+            self.best_acc = acc
         return (test_loss/batch_idx, 100.*correct/total)
 
 
-    def checkpoint(self,acc, epoch):
-    # Save checkpoint.
-        print('Saving..')
-        state = {
-            'net': self.net,
-            'acc': acc,
-            'epoch': epoch,
-            'rng_state': torch.get_rng_state()
-        }
-        if not os.path.isdir('checkpoint'):
-            os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/ckpt.t7' + self.args.name + '_'
-               + str(self.args.seed))
+   
 
 
     def adjust_learning_rate(self,optimizer, epoch):
         lr = self.args.lr
-        if epoch >= 100:
+        if (epoch+1)%30 == 0:
             lr /= 10
-        if epoch >= 150:
-            lr /= 10
+            self.args.lr/=10
+            print(self.args.lr)
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
 
@@ -202,3 +191,4 @@ class myModel(nn.Module):
     
 
    
+
